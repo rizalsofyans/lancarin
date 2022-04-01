@@ -1,0 +1,29 @@
+{
+	"menu" : {
+		"icon"  : "fa fa-instagram",
+		"color" : "#d62976",
+		"link"  : "title link",
+		"title" : "Instagram"
+	},
+
+	"submenu" : {
+		"instagram/post" : "Post",
+    "instagram/manual_activity/form_post" : "Bulk Post",
+		"instagram/auto_repost/form" : "Auto Repost",
+		"instagram/activity" : "Auto Activity",
+		"instagram/data_collection/form" : "Data Collection",
+		"instagram/manual_activity" : "Manual Activity"
+	},
+
+	"account" : {
+		"add_account" : "instagram/block_list_account"
+	},
+
+	"js" : {
+		"instagram" : "instagram/assets/js/instagram.js"
+	},
+
+	"css" : {
+		"instagram" : "instagram/assets/css/instagram.css"
+	}
+}

@@ -1,0 +1,91 @@
+#cron market.lancarin
+*/15 * * * * wget --spider -O - https://market.lancarin.com >/dev/null 2>&1
+
+
+#cron LANCARIN
+#backup bitbucket
+0 0 * * * bash /var/www/html/lancarin/backup.sh >/dev/null 2>&1
+
+#auto activity
+#* * * * * wget --spider -O - https://lancarin.com/instagram/post/cron >/dev/null 2>&1
+#* * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/like >/dev/null 2>&1
+#* * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/comment >/dev/null 2>&1
+#* * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/follow >/dev/null 2>&1
+#*/3 * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/unfollow >/dev/null 2>&1
+#* * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/direct_message >/dev/null 2>&1
+#* * * * * wget --spider -O - https://lancarin.com/instagram/activity/cron/repost_media >/dev/null 2>&1 
+
+* * * * * php /var/www/html/lancarin/index.php instagram post cron >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram activity cron like >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram activity cron comment >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram activity cron follow >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram activity cron unfollow >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram activity cron direct_message >/dev/null 2>&1
+#* * * * * php /var/www/html/lancarin/index.php instagram activity cron repost_media >/dev/null 2>&1
+
+#data collection
+#* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram followers >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram followings >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram commenters >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram comments >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram userpost >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule instagram likers >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule marketplace bukalapak >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule marketplace shopee >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule marketplace tokopedia >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram data_collection run_schedule onlineshop  >/dev/null 2>&1
+
+
+#manual activity
+#* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule follow >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule unfollow >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule like >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule comment >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule delete_media >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule direct_message >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram manual_activity run_schedule repost >/dev/null 2>&1
+
+#collaboration activity
+* * * * * php /var/www/html/lancarin/index.php instagram collaboration_activity scan_post >/dev/null 2>&1
+* * * * * php /var/www/html/lancarin/index.php instagram collaboration_activity scheduled_like >/dev/null 2>&1
+
+#auto repost (not auto activity repost)
+* * * * * php /var/www/html/lancarin/index.php instagram auto_repost schedule_scan >/dev/null 2>&1
+
+
+#send email error reporting
+* * * * * php /var/www/html/lancarin/index.php users send_email_error_reporting  >/dev/null 2>&1
+
+#send email relogin
+0 * * * * php /var/www/html/lancarin/index.php instagram activity cron reportReloginStatus >/dev/null 2>&1
+
+#auto assign proxy
+0 * * * * php /var/www/html/lancarin/index.php instagram activity cron autoAssignProxy >/dev/null 2>&1
+
+#bersih2 aplikasi
+#remove userIG from expired account, remove file manager, recalculate proxy
+*/10 * * * * php /var/www/html/lancarin/index.php profile clean_apps  >/dev/null 2>&1
+
+#check mutasi automatis
+*/10 * * * * php /var/www/html/lancarin/index.php instagram activity cron check_payment >/dev/null 2>&1
+
+#H-1 create invoice + send email
+30 0 * * * wget --spider -O - https://lancarin.com/check_renewal_reminder/1 >/dev/null 2>&1
+#30 0 * * * php /var/www/html/lancarin/index.php instagram activity cron checkRenewalReminder 3 >/dev/null 2>&1
+
+
+#H-0 send email
+#0 0 * * * wget --spider -O - https://lancarin.com/check_renewal_reminder/0 >/dev/null 2>&1
+#0 0 * * * php /var/www/html/lancarin/index.php instagram activity cron checkRenewalReminder 1 >/dev/null 2>&1
+
+#send email reminder
+30 */6 * * * wget --spider -O - https://lancarin.com/send_reminder >/dev/null 2>&1
+#30 */6 * * * php /var/www/html/lancarin/index.php instagram activity cron sendReminder >/dev/null 2>&1
+
+#kirim.email expired user
+#0 1 * * * wget --spider -O - https://lancarin.com/kirim_email_expired_user >/dev/null 2>&1 
+
+#update subscriber (kirim.email)
+#* * * * * wget --spider -O - https://lancarin.com/update_subscriber >/dev/null 2>&1

@@ -1,0 +1,28 @@
+RewriteEngine On
+Options +FollowSymLinks
+Options -Indexes
+RewriteCond %{SCRIPT_FILENAME} !-d  
+RewriteCond %{SCRIPT_FILENAME} !-f
+RewriteRule . index.php [L,QSA]
+php_value upload_max_filesize 50M
+php_value post_max_size 50M
+
+# Protect File
+<Files cron.txt>
+Order Allow,Deny
+Deny from all
+</Files>
+<Files cookiejar>
+Order Allow,Deny
+Deny from all
+</Files>
+<Files google-cloud-credential.json>
+Order Allow,Deny
+Deny from all
+</Files>
+
+
+<FilesMatch "\.(htaccess|md|htpasswd|ini|gitignore|ftpconfig|log|sh|env|sql)$">
+Order Allow,Deny
+Deny from all
+</FilesMatch>

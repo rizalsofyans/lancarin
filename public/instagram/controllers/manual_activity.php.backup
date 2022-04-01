@@ -1,0 +1,1105 @@
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PHPHtmlParser\Dom;
+
+class manual_activity extends MX_Controller {
+	public function __construct(){
+		parent::__construct();
+		$this->module = get_class($this);
+		$this->load->model(get_class($this).'_model', 'model');
+	}
+	
+	public function index(){
+		$module_name = 'Manual Activity';
+		$module_icon = "fa fa-paper-plane";
+		$columns = array(
+			"id" => 'Id',
+			"username" => 'Username',
+			"job_name" => 'Job Name',
+			"type" => 'Type',
+			"target" => 'Target',
+			'stat' => 'Status',
+			'post_time' => 'Action Time',
+			'note' => 'Note',
+			"log_created" => 'Created',
+		);
+		
+		$page        = (int)get("p");
+		$limit       = 50;
+		$result      = $this->model->getTableManualActivity($columns, $limit, $page);
+		$total       = $this->model->getTableManualActivity($columns, -1, -1);
+		$total_final = $total;
+
+		$query = array();
+		$query_string = "";
+		if(get("c")) $query["c"] = get("c");
+		if(get("t")) $query["t"] = get("t");
+		if(get("k")) $query["k"] = get("k");
+
+		if(!empty($query)){
+			$query_string = "?".http_build_query($query);
+		}
+
+		$configs = array(
+			"base_url"   => cn('instagram/'.get_class($this).$query_string), 
+			"total_rows" => $total_final, 
+			"per_page"   => $limit
+		);
+
+		$this->pagination->initialize($configs);
+
+		$data = array(
+			"columns" => $columns,
+			"result"  => $result,
+			"total"   => $total_final,
+			"page"    => $page,
+			"limit"   => $limit,
+			"module"  => 'instagram/'. get_class($this),
+			"module_class"  => 'instagram/'.get_class($this),
+			"module_name" => $module_name,
+			"module_icon" => $module_icon
+		);
+		$this->template->build('manual_activity/index', $data);
+	}
+
+	public function form(){
+		$data = array(
+			'accounts'     => $this->model->fetch("id, username, avatar, ids", INSTAGRAM_ACCOUNTS, "uid = ".session("uid")." AND status = 1"),
+			//'onlineshop' => $this->getListOnlineShop(),
+			'jobname' => $this->getjobname()
+		);
+		$this->template->build('manual_activity/form', $data);
+	}
+	
+	public function getjobname(){
+		$search = post('search');
+		$page = post('page');
+		$q = $this->db->select('job_name')->distinct()->from('instagram_manual_activity')->like('job_name', $search)->get();
+		$data = [];
+		if($q->num_rows()>0){
+			foreach($q->result() as $row){
+				$data[] = $row->job_name;
+			}
+		}
+		return $data;
+	}
+	
+	private $start_ts=[];
+	public function save(){
+		$uid = session('uid');
+		$accounts = post('account');
+		$type = post('type');
+		$target = post('target');
+		$force = (int) post('force'); //0 give warning, 1 = force , 2 = sesuaikan
+		$start = post('start');
+		if(empty($start)) $start = date("Y-m-d H:i:s");
+		$start2 = post('start-time');
+		if(!empty($start2) && strtotime($start) < strtotime($start2)) $start = $start2;
+		$delay = (int) post('delay');
+		if($delay<1) $delay = 1;
+		$interval = (int) post('interval');
+		if($interval<1) $interval = 1;
+		$jobname = post('jobname');
+		$force = post('force');
+		$adjust = post('adjust');
+		$config = post('config');
+		$additional_config = json_encode($config);
+		$hours = post('hours');
+		$days = post('days');
+		
+		if(empty($accounts)){
+			ms([
+				'status'=>'error',
+				'message'=>'Akun tidak boleh kosong',
+			]);
+		}else{
+			$start_per_account =[];
+			foreach($accounts as $account_id){
+				$q = $this->db->get_where(INSTAGRAM_ACCOUNTS, ['uid'=>$uid, 'id'=>$account_id, 'status'=>1]);
+				if($q->num_rows()==0){
+					ms([
+						'status'=>'error',
+						'message'=>'Akun tidak ditemukan',
+					]);
+				}else{
+					$start_per_account[$account_id] = $start;
+				}
+			}
+		}
+		
+		if(empty($type)){
+			ms([
+				'status'=>'error',
+				'message'=>'Type tidak boleh kosong',
+			]);
+		}
+		
+		if(empty($target)){
+			ms([
+				'status'=>'error',
+				'message'=>'Target tidak boleh kosong',
+			]);
+		}
+		
+		if(empty($jobname)){
+			$jobname = date("Ymd_His")."_".$type;
+		}
+		
+		$warning_start_time = [];
+		foreach($accounts as $account_id){
+			$q = $this->db->select('a.id, b.id as account_id, b.username, a.post_time')->from('instagram_manual_activity a')->join(INSTAGRAM_ACCOUNTS.' b', 'a.account_id=b.id')->where('a.status',0)->where('a.account_id', $account_id)->where('a.uid', $uid)->order_by('a.post_time', 'desc')->limit(1)->get();
+			if($q->num_rows() >0){
+				$start_ts = strtotime($start_per_account[$account_id]);
+				$last_ts = strtotime($q->row()->post_time);
+				
+				if($start_ts <= $last_ts){
+					$warning_start_time[$account_id] = ['username'=>$q->row()->username, 'start_ts'=>$start_ts, 'post_time'=>$last_ts, 'adjust_ts'=>$last_ts+60];
+				}
+			}
+		}
+		
+		if(!empty($warning_start_time)){
+			if(empty($force) && empty($adjust)){
+				$aktifitas = ucwords(str_replace('_', ' ', $type));
+				$message ='<div>Kami mendeteksi adanya aktifitas <b>'. $aktifitas .'</b> yang belum terselesaikan pada akun berikut:</div>';
+				$message .='<table class="table table-striped table-bordered table-hover"><tr><th>Akun</th><th>Schedule terakhir</th></tr>';
+				foreach($warning_start_time as $id=>$row){
+					$message .='<tr><td>'.$row['username'].'</td><td>'.date('Y-m-d H:i:s', $row['post_time']).'</td></tr>';
+				}
+				$message .= '</table>';
+				$message .= '<div><b>Option:</b><br>
+					<ul>
+						<li><u><i>Batal</i></u> : Untuk membatalkan pembuatan schedule baru</li>
+						<li><u><i class="text-primary">Adjust</i></u> : Untuk menyesuaikan pembuatan schedule 1 menit setelah semua aktifitas <b>'.$aktifitas.'</b> selesai</li>
+						<li><u><i class="text-danger">Force</i></u> : Untuk tetap memaksakan settingan schedule baru</li>
+					</ul>
+				</div>';
+				ms([
+					'status'=>'warning',
+					'message'=>$message,
+					'confirmation'=>'warning time'
+				]);
+			}
+		}
+		
+		$target = str_replace(',',"\n", $target);
+		$target = str_replace(' ',"\n", $target);
+		$expTarget = explode("\n", $target);
+		$i =0;
+		
+		foreach($expTarget as $row){
+			$row = trim($row);
+			if(!empty($row)) {
+				foreach($accounts as $iAccount=>$account_id){
+					if(!isset($this->start_ts[$account_id])) $this->start_ts[$account_id] = strtotime($start_per_account[$account_id]);
+					$data = [
+						'uid'=>$uid,
+						'account_id'=>$account_id,
+						'job_name'=>$jobname,
+						'type'=>$type,
+						'target'=>$row,
+						'additional_config'=> $additional_config,
+						//'post_time'=>date('Y-m-d H:i:s', $start_ts + ($interval * 60 * $i) + ($delay*60*$iAccount)),
+						'post_time'=>$this->calculatNextRun($account_id, $interval, ($delay*$iAccount), $days, $hours),
+					];
+					$this->db->insert('instagram_manual_activity', $data);
+				}
+				$i++;
+			}
+		}
+		ms([
+			'status'=>'success',
+			'message'=>'Berhasil',
+		]);
+		
+	}
+	
+	function calculatNextRun($account_id, $interval, $delay, array $days, array $hours){
+		$start_ts = $this->start_ts[$account_id];
+		$next = $start_ts + ($interval*60)+ ($delay*60);
+
+		$d = date('w', $next);
+		$h = date('G', $next);
+		$ts = 0;
+		$tmp = [];
+		while(!in_array($d, $days) || !in_array($h, $hours)){
+			if(!in_array($d, $days)){
+				$ts = mktime(0,0,0, date('n', $next), date('j', $next), date('Y', $next));
+				$next = $next + 86400;
+				$d =date('w', $ts);
+				$h =date('G', $ts);
+			}
+			
+			if(!in_array($h,$hours)){
+				$ts = mktime(date('H', $next),0,0, date('n', $next), date('j', $next), date('Y', $next));
+				$next = $next + 3600 ;
+				$d =date('w', $ts);
+				$h =date('G', $ts);
+			}
+		}
+		$this->start_ts[$account_id] = empty($ts)?$next:$ts;
+		return date('Y-m-d H:i:s', $this->start_ts[$account_id]);
+	}
+	
+	public function ajax_delete_item(){
+		$listid = post('id');
+		if(!empty($listid)){
+			if(!is_array($listid)) $listid=[$listid];
+			foreach($listid as $id){
+				$this->db->delete('instagram_manual_activity', ['id'=>$id , 'uid'=>session('uid')]);
+			}
+			ms([
+				'status'=>'success',
+				'message'=>'Data berhasil dihapus'
+			]);
+		}else{
+			ms([
+				'status'=>'error',
+				'message'=>'id cannot empty'
+			]);
+		}
+		
+	}
+	
+	public function run_schedule(){
+		if(!is_cli() && session('uid') !=1) redirect();
+		$now = NOW;
+		$q = $this->db->select('a.id, a.uid')->from('instagram_manual_activity a')->where('a.post_time <=',$now)->where('a.status', 0)->limit(10)->order_by('a.post_time','asc')->get();
+		if($q->num_rows() ==0) die('kosong');
+
+		foreach($q->result() as $row){//make it on progress
+			$this->db->update('instagram_manual_activity', ['status'=>2], ['id'=>$row->id]);
+		}
+		
+		foreach($q->result() as $row){
+			$_POST['id']=$row->id;
+			$_POST['manual_uid']=$row->uid;
+			$this->run_now(true);
+		}
+	}
+	
+	
+	public function run_now($return=false){
+		$id = post('id');
+		$uid = !empty(post('manual_uid'))?post('manual_uid'):session('uid');
+		$q=$this->db->get_where('instagram_manual_activity', ['id'=>$id , 'uid'=>$uid]);
+		if($q->num_rows()>0){
+			if($q->row()->status ==1){
+				$ms = [
+					'status'=>'error',
+					'message'=>'Proses sudah selesai'
+				];
+				if($return) return $ms;else ms($ms);
+			}else{
+				if($q->row()->type=='post'){
+					
+					//$this->ajax_collect();
+				}elseif($q->row()->type=='repost'){
+					
+					//$this->ajax_collect_marketplace();
+				}else{
+					$resp = $this->do_action($id);
+					if($resp['message']=='success' && !empty($q->row()->collab_post_id)){
+						$this->db->update('instagram_manual_activity', ['point'=>0], ['id'=>$q->row()->id]);
+						$this->db->query('UPDATE instagram_collaboration_activity a JOIN instagram_collaboration_post b ON a.id=b.collab_id SET a.point=a.point+? WHERE b.id=?',[$q->row()->point, $q->row()->collab_post_id]);
+					}
+					$ms = $resp;
+					if($return) return $ms;else ms($ms);
+				}
+				
+			}
+		}else{
+			ms([
+				'status'=>'error',
+				'message'=>'id tidak ditemukan'
+			]);
+		}
+	}
+	
+	public function test_engine(){
+		$account_id = post('account');
+		$target = post('target');
+		$text = trim(post('text'));
+		$uid = session('uid');
+		if(empty($target) ||empty($text) ){
+			ms([
+				"status"  => "error",
+				"message" => 'text dan target tidak boleh kosong.'
+			]);
+		}
+		$instagram_account = $this->db->get_where('instagram_accounts', ['status'=>1, 'id'=>$account_id, 'uid'=>session('uid')])->row();
+		if(empty($instagram_account)){
+			ms([
+				"status"  => "error",
+				"message" => 'account tidak boleh kosong.'
+			]);
+		}
+		try {
+			$ig   = new InstagramAPI($instagram_account->username, $instagram_account->password, $instagram_account->proxy);
+
+			$target = $this->parseTarget($target);
+			if(in_array($target['type'], ['username', 'userid'])){
+				if($target['mode']=='url') {
+					$target['target'] = $this->getUsernameFromUrl($target['target']);
+				}
+				if($target['type']=='username'){
+					$userId = $ig->get_userid_from_name($target['target']);
+				}else{
+					$userId = $target['target'];
+				}
+				
+				if(empty($userId)){
+					$msg = 'User target not exists';
+					$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+					return [
+						'status'=>'error',
+						'message'=>$msg
+					];
+				}
+				$message = $this->parseMessage($text, $uid, $ig, $userId);
+				ms([
+					"status"  => "success",
+					"data" => $message
+				]);
+			}
+			
+		} catch (Exception $e) {
+			ms([
+				"status"  => "error",
+				"message" => $e->getMessage()
+			]);
+		}
+	}
+
+	private function parseTarget($target){
+		$targets=[];
+		if(filter_var($target, FILTER_VALIDATE_URL)){
+			$targets['mode'] = 'url';
+			if(preg_match('/https:\/\/www.instagram.com\/p\/+[a-zA-Z\-0-9]+/', $target)){
+				$targets['type'] = 'media';
+			}else{
+				$targets['type'] = 'username';
+			}
+			$targets['target'] = $target;
+		}else{
+			$targets['mode'] = 'string';
+			if(preg_match('/^\d+$/', $target)){
+				$targets['type'] = 'userid';
+			}elseif(preg_match('/\d+_\d+/', $target)){
+				$targets['type'] = 'mediaid';
+			}else{
+				$targets['type'] = 'username';
+			}
+			$targets['target'] = $target;
+		}
+		return $targets;
+	}
+	
+	private function do_action($id){
+		//$id= post('id');
+		$q = $this->db->select('a.*, b.id AS user_id, b.status as user_status, b.expiration_date')->from('instagram_manual_activity a')->join(USERS.' b','a.uid=b.id','LEFT')->where('a.id',$id)->get();
+		if($q->num_rows()==0){
+			return [
+				'status'=>'error',
+				'message'=>'schedule not found'
+			];
+		}else{
+			if(empty($q->row()->user_id)){
+				$msg = 'User apps not found';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['uid'=>$q->row()->uid, 'status'=>0]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}else{
+				if($q->row()->user_status != 1){
+					$msg = 'User apps not active';
+					$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['uid'=>$q->row()->uid, 'status'=>0]);
+					return [
+						'status'=>'error',
+						'message'=>$msg
+					];
+				}elseif(strtotime($q->row()->expiration_date) < time()){
+					$msg = 'User apps expired';
+					$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['uid'=>$q->row()->uid, 'status'=>0]);
+					return [
+						'status'=>'error',
+						'message'=>$msg
+					];
+				}
+				
+				$p = $this->db->get_where(INSTAGRAM_ACCOUNTS, ['id'=>$q->row()->account_id]);
+				if($p->num_rows()==0){
+					$msg = 'User account ig not found';
+					$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['uid'=>$q->row()->uid, 'status'=>0]);
+					return [
+						'status'=>'error',
+						'message'=>$msg
+					];
+				}else{
+					if($p->row()->status != 1){
+						$msg = 'User account ig not active or have problem';
+						$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+						return [
+							'status'=>'error',
+							'message'=>$msg
+						];
+					}elseif(empty($p->row()->proxy)){
+						$msg = 'User account dont have proxy';
+						$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+						return [
+							'status'=>'error',
+							'message'=>$msg
+						];
+					}
+					
+					$userIg = $p->row()->username;
+					$passIg = $p->row()->password;
+					$proxy = $p->row()->proxy;
+				}
+			}
+			
+		}
+		
+		$type = $q->row()->type;
+		$target = $q->row()->target;
+		$uid = $q->row()->uid;
+		$config = json_decode($q->row()->additional_config, true);
+		$ig = new InstagramAPI($userIg, $passIg, $proxy);
+
+		$target = $this->parseTarget($target);
+		if($type=="follow" && in_array($target['type'], ['username', 'userid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getUsernameFromUrl($target['target']);
+			}
+			if($target['type']=='username'){
+				$userId = $ig->get_userid_from_name($target['target']);
+			}else{
+				$userId = $target['target'];
+			}
+			
+			if(empty($userId)){
+				$msg = 'User target not exists';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$userinfo = $ig->get_userinfo($userId);
+			if(empty($userinfo)){
+				$msg = 'User target not exists.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$friendship = $ig->get_friendships($userId);
+			if(empty($friendship) || !isset($friendship->$userId)){
+				$msg = 'Cannot get friendship status.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($friendship->$userId->following==1){
+				$msg = 'Already following';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($friendship->$userId->outgoing_request==1){
+				$msg = 'Already following but still didnt accepted yet';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$response = $ig->follow($userId);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+			
+		}elseif($type=="unfollow" && in_array($target['type'], ['username', 'userid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getUsernameFromUrl($target['target']);
+			}
+			if($target['type']=='username'){
+				$userId = $ig->get_userid_from_name($target['target']);
+			}else{
+				$userId = $target['target'];
+			}
+			
+			if(empty($userId)){
+				$msg = 'User target not exists';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$userinfo = $ig->get_userinfo($userId);
+			if(empty($userinfo)){
+				$msg = 'User target not exists.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$friendship = $ig->get_friendships($userId);
+			if(empty($friendship) || !isset($friendship->$userId)){
+				$msg = 'Cannot get friendship status.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($friendship->$userId->following==0 && $friendship->$userId->outgoing_request==0){
+				$msg = 'Already not follow';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$response = $ig->unfollow($userId);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+			
+		}elseif($type=="like" && in_array($target['type'], ['media','mediaid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getMediaIdByUrl($target['target']);
+			}
+			
+			
+			$mediaId = $target['target'];
+			$mediainfo = $ig->get_mediainfo($mediaId);
+			if(empty($mediainfo)){
+				$msg = 'Media tidak ditemukan';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->comment_likes_enabled==0){
+				$msg = 'Media like disabled';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->has_liked==1){
+				$msg = 'Media already liked';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$response = $ig->like($mediaId, 'profile', ['username'=>$mediainfo->user->username, 'user_id'=>$mediainfo->user->pk]);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+		}elseif($type=="unlike" && in_array($target['type'], ['media','mediaid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getMediaIdByUrl($target['target']);
+			}
+			
+			$mediaId = $target['target'];
+			$mediainfo = $ig->get_mediainfo($mediaId);
+			if(empty($mediainfo)){
+				$msg = 'Media tidak ditemukan';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->comment_likes_enabled==0){
+				$msg = 'Media like disabled';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->has_liked==0){
+				$msg = 'Media not liked yet';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			
+			$response = $ig->unlike($mediaId, 'profile', ['username'=>$mediainfo->user->username, 'user_id'=>$mediainfo->user->pk]);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+		}elseif($type=="delete_media" && in_array($target['type'], ['media','mediaid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getMediaIdByUrl($target['target']);
+			}
+
+			$mediaId = $target['target']; 
+			$mediainfo = $ig->get_mediainfo($mediaId);
+			if(!isset($config['min_like'])) $config['min_like']=0;
+			if(!isset($config['min_comment'])) $config['min_comment']=0;
+			if(!isset($config['min_date'])) $config['min_date']=0; 
+			
+			if(empty($mediainfo)){
+				$msg = 'Media is not found';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->user->username != $userIg){
+				$msg = 'Media is not own post';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($config['min_like'] != 0 && $mediainfo->like_count < $config['min_like']){
+				$msg = 'Media like under '. $config['min_like'];
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($config['min_comment'] !=0 && $mediainfo->comment_count < $config['min_comment']){
+				$msg = 'Media comment under '. $config['min_comment'];
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($config['min_date'] !=0 && $mediainfo->taken_at < strtotime($config['min_date'])){
+				$msg = 'Media post date under '. $config['min_date'];
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+				
+			}
+			
+			$response = $ig->delete_media($mediaId, $mediainfo->media_type);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+		}elseif($type=="comment" && in_array($target['type'], ['media','mediaid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getMediaIdByUrl($target['target']);
+			}
+			
+
+			$mediaId = $target['target'];
+			$mediainfo = $ig->get_mediainfo($mediaId);
+			if(!isset($config['message'])) $config['message']='';
+
+			if(empty($mediainfo)){
+				$msg = 'Media is not found';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($mediainfo->comment_likes_enabled == 0){
+				$msg = 'Media comment disabled';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif(empty($config['message'])){
+				$msg = 'Message cant empty';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$message = $this->parseMessage($config['message'], $uid, $ig, $mediainfo->user->pk);
+
+			$response = $ig->comment($mediaId, $message);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+		}elseif($type=="direct_message" && in_array($target['type'], ['username', 'userid'])){
+			if($target['mode']=='url') {
+				$target['target'] = $this->getUsernameFromUrl($target['target']);
+			}
+			if($target['type']=='username'){
+				$userId = $ig->get_userid_from_name($target['target']);
+			}else{
+				$userId = $target['target'];
+			}
+			
+			if(empty($userId)){
+				$msg = 'User target not exists';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$userinfo = $ig->get_userinfo($userId);
+			if(empty($userinfo)){
+				$msg = 'User target not exists.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$message = $config['message'];
+			$friendship = $ig->get_friendships($userId);
+			if(empty($friendship) || !isset($friendship->$userId)){
+				$msg = 'Cannot get friendship status.';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($friendship->$userId->is_private==1 && $friendship->$userId->following==0){
+				$msg = 'You cant send message to private user who is not your friend yet';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif(empty($message)){
+				$msg = 'Message cannot empty';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$message = $this->parseMessage($config['message'], $uid, $ig, $userId);
+			$response = $ig->direct_message($userId, $message);
+			if(!isset($response->status)){
+				$msg = 'Unknown error';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}elseif($response->status !='ok'){
+				$msg = 'Error from IG';
+				$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+				return [
+					'status'=>'error',
+					'message'=>$msg
+				];
+			}
+			
+			$msg = 'Success';
+			$this->db->update('instagram_manual_activity', ['status'=>1, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'success',
+				'message'=>$msg
+			];
+			
+		}else{
+			$msg = 'Action not found';
+			$this->db->update('instagram_manual_activity', ['status'=>3, 'note'=>$msg], ['id'=>$id]);
+			return [
+				'status'=>'error',
+				'message'=>$msg
+			];
+		}
+		
+		
+	}
+
+	public function parseMessage($message, $uid, $ig=null, $targetUserId=null, array $param=[]){
+		$myinfo = null;
+		$targetinfo = null;
+		if(!empty($ig)){
+			if (strpos($message, '{my_fullname}') !== false) {
+			    if(!isset($param['my_fullname'])){
+			    	$myinfo = !empty($myinfo)?$myinfo:$ig->get_userinfo();
+			    	$param['my_fullname'] = isset($myinfo->full_name)?$myinfo->full_name:'';
+			    }
+			    $message = str_replace('{my_fullname}', $param['my_fullname'], $message);
+			}
+			if (strpos($message, '{my_username}') !== false) {
+			    if(!isset($param['my_username'])){
+			    	$myinfo = !empty($myinfo)?$myinfo:$ig->get_userinfo();
+			    	$param['my_username'] = isset($myinfo->username)?$myinfo->username:'';
+			    }
+			    $message = str_replace('{my_username}', $param['my_username'], $message);
+			}
+			if (strpos($message, '{my_post_count}') !== false) {
+			    if(!isset($param['my_post_count'])){
+			    	$myinfo = !empty($myinfo)?$myinfo:$ig->get_userinfo();
+			    	$param['my_post_count'] = isset($myinfo->media_count)?$myinfo->media_count:'';
+			    }
+			    $message = str_replace('{my_post_count}', $param['my_post_count'], $message);
+			}
+			if (strpos($message, '{my_follower_count}') !== false) {
+			    if(!isset($param['my_follower_count'])){
+			    	$myinfo = !empty($myinfo)?$myinfo:$ig->get_userinfo();
+			    	$param['my_follower_count'] = isset($myinfo->follower_count)?$myinfo->follower_count:'';
+			    }
+			    $message = str_replace('{my_follower_count}', $param['my_follower_count'], $message);
+			}
+			if (strpos($message, '{my_following_count}') !== false) {
+			    if(!isset($param['my_following_count'])){
+			    	$myinfo = !empty($myinfo)?$myinfo:$ig->get_userinfo();
+			    	$param['my_following_count'] = isset($myinfo->following_count)?$myinfo->following_count:'';
+			    }
+			    $message = str_replace('{my_following_count}', $param['my_following_count'], $message);
+			}
+
+			if (strpos($message, '{target_fullname}') !== false) {
+			    if(!isset($param['target_fullname'])){
+			    	$targetinfo = !empty($targetinfo)?$targetinfo:$ig->get_userinfo($targetUserId);
+			    	$param['target_fullname'] = isset($targetinfo->full_name)?$targetinfo->full_name:'';
+			    }
+			    $message = str_replace('{target_fullname}', $param['target_fullname'], $message);
+			}
+			if (strpos($message, '{target_username}') !== false) {
+			    if(!isset($param['target_username'])){
+			    	$targetinfo = !empty($targetinfo)?$targetinfo:$ig->get_userinfo($targetUserId);
+			    	$param['target_username'] = isset($targetinfo->username)?$targetinfo->username:'';
+			    }
+			    $message = str_replace('{my_username}', $param['target_username'], $message);
+			}
+			if (strpos($message, '{target_post_count}') !== false) {
+			    if(!isset($param['target_post_count'])){
+			    	$targetinfo = !empty($targetinfo)?$targetinfo:$ig->get_userinfo($targetUserId);
+			    	$param['target_post_count'] = isset($targetinfo->media_count)?$targetinfo->media_count:'';
+			    }
+			    $message = str_replace('{target_post_count}', $param['target_post_count'], $message);
+			}
+			if (strpos($message, '{target_follower_count}') !== false) {
+			    if(!isset($param['target_follower_count'])){
+			    	$targetinfo = !empty($targetinfo)?$targetinfo:$ig->get_userinfo($targetUserId);
+			    	$param['target_follower_count'] = isset($targetinfo->follower_count)?$targetinfo->follower_count:'';
+			    }
+			    $message = str_replace('{target_follower_count}', $param['target_follower_count'], $message);
+			}
+			if (strpos($message, '{target_following_count}') !== false) {
+			    if(!isset($param['target_following_count'])){
+			    	$targetinfo = !empty($targetinfo)?$targetinfo:$ig->get_userinfo($targetUserId);
+			    	$param['target_following_count'] = isset($targetinfo->following_count)?$targetinfo->following_count:'';
+			    }
+			    $message = str_replace('{target_following_count}', $param['target_following_count'], $message);
+			}
+			
+
+		}
+
+		if(strpos($message, '{') !== false && strpos($message, '}') !== false){
+			$q = $this->db->get_where('general_template_message', ['uid'=>$uid]);
+			if($q->num_rows()>0){
+				foreach($q->result() as $row){
+				    $message = str_replace('{'.$row->text.'}', $row->replace_text, $message);
+				    if(!strpos($message, '{') !== false || !strpos($message, '}') !== false) break;
+				}
+			}
+		}
+
+		$spintax = new Spintax();
+		$message = $spintax->process($message);
+		
+		return $message;
+	}
+	
+	function time_elapsed_string($datetime, $full = false) {
+	    $now = new DateTime;
+	    $ago = new DateTime($datetime);
+	    $diff = $now->diff($ago);
+
+	    $diff->w = floor($diff->d / 7);
+	    $diff->d -= $diff->w * 7;
+
+	    $string = array(
+	        'y' => 'tahun',
+	        'm' => 'bulan',
+	        'w' => 'minggu',
+	        'd' => 'hari',
+	        'h' => 'jam',
+	        'i' => 'menit',
+	        's' => 'detik',
+	    );
+	    foreach ($string as $k => &$v) {
+	        if ($diff->$k) {
+	            $v = $diff->$k . ' ' . $v . ($diff->$k > 1 ? 's' : '');
+	        } else {
+	            unset($string[$k]);
+	        }
+	    }
+
+	    if (!$full) $string = array_slice($string, 0, 1);
+	    return $string ? implode(', ', $string) : '';
+	}
+
+	private function getUserInfoByName($i, $name){
+		try{
+			$info = $i->people->getInfoByName($name);
+			$user = $info->getUser();
+			$result = [
+				'pk' => $user->getPk(),
+				'media'=>$user->getMedia_count(),
+				'followers'=>$user->getFollower_count(),
+				'followings'=>$user->getFollowing_count(),
+			];
+			return $result;
+		} catch (Exception $e){
+				return false;
+		}
+	}
+	
+	private function getMediaIdByUrl($url){
+		$api = file_get_contents("http://api.instagram.com/oembed?url=". $url);
+		$apiObj = json_decode($api,true);
+		if(!empty($apiObj)){
+			return $apiObj['media_id'];
+		}else{
+			return false;
+		}
+			
+    }
+	
+}
